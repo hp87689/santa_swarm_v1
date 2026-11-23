@@ -1,0 +1,109 @@
+name: Santa Swarm — evolve and validate
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 4 runs/day, avoiding the top of the hour to reduce scheduling delays.
+    - cron: '17 1,7,13,19 * * *'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: santa-swarm-main
+  cancel-in-progress: false
+
+jobs:
+  evolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Download project source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Test trusted validator
+        run: python -m unittest discover -s tests -v
+
+      - name: Install official Kaggle CLI
+        run: python -m pip install --disable-pip-version-check kaggle
+
+      - name: Download competition data privately
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          test -n "$KAGGLE_API_TOKEN" || { echo 'Missing KAGGLE_API_TOKEN repository secret'; exit 1; }
+          mkdir -p data
+          kaggle competitions download santa-2026 -p data --unzip
+          test -s data/puzzles.csv
+          test -s data/sample_submission.csv
+
+      - name: Recover most recent successful champion artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p state logs
+          for run_id in $(gh run list --workflow swarm.yml --status completed --limit 25 --json databaseId,conclusion --jq '.[] | select(.conclusion == "success") | .databaseId'); do
+            if gh run download "$run_id" --name champion --dir state; then
+              echo "Restored champion from run $run_id"
+              break
+            fi
+          done
+          if [ -f state/champion.csv ]; then cp state/champion.csv state/base.csv; else cp data/sample_submission.csv state/base.csv; fi
+
+      - name: Research papers and ask one free coding model
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+        run: python swarm/agent.py
+
+      - name: Evaluate model code in an isolated container without credentials or network
+        run: |
+          mkdir -p scratch
+          chmod 777 scratch
+          timeout 650s docker run --rm --network none --cpus 1 --memory 2g \
+            --pids-limit 96 --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --user 65534:65534 --tmpfs /tmp:rw,size=64m \
+            -v "$PWD":/workspace:ro -v "$PWD/scratch":/output:rw \
+            python:3.12-slim \
+            python -B /workspace/swarm/runner.py \
+            /workspace/data/puzzles.csv /workspace/state/base.csv \
+            /workspace/candidate.py /output/attempt.csv \
+            --generation "${{ github.run_number }}" \
+            > scratch/sandbox.log 2>&1 || echo 'Sandbox failed or timed out; retaining baseline'
+          tail -20 scratch/sandbox.log || true
+
+      - name: Independently validate and merge shorter programs
+        run: |
+          python swarm/verify.py data/puzzles.csv state/base.csv scratch/attempt.csv state/champion.csv state/report.json
+          cat state/report.json
+
+      - name: Persist champion for next run
+        uses: actions/upload-artifact@v4
+        with:
+          name: champion
+          path: |
+            state/champion.csv
+            state/report.json
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Save research and sandbox logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-and-logs
+          path: |
+            logs/
+            candidate.py
+            scratch/sandbox.log
+          retention-days: 3
+          if-no-files-found: ignore

@@ -1,0 +1,10 @@
+data/
+state/
+scratch/
+logs/
+candidate.py
+__pycache__/
+*.pyc
+.env
+kaggle.json
+submission.csv
