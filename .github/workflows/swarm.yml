@@ -33,7 +33,7 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Install official Kaggle CLI
-        run: python -m pip install --disable-pip-version-check kaggle
+        run: python -m pip install --disable-pip-version-check kaggle six
 
       - name: Download competition data privately
         env:
@@ -58,6 +58,21 @@ jobs:
             fi
           done
           if [ -f state/champion.csv ]; then cp state/champion.csv state/base.csv; else cp data/sample_submission.csv state/base.csv; fi
+
+      - name: Bootstrap from Apache-licensed public Kaggle notebook outputs
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          mkdir -p data/public logs
+          if python swarm/public_bootstrap.py needs --puzzles data/puzzles.csv --base state/base.csv; then
+            # Published Apache-2.0 notebooks. We consume their data files ONLY.
+            # A notebook may not publish a complete submission CSV; that is safe
+            # and is reported as no import rather than a claimed improvement.
+            kaggle kernels output avazaku/elf-calc-milp-recipe-selection-target-rebuilds -p data/public/avazaku -o || echo 'First public notebook output unavailable'
+            kaggle kernels output pardheev/132-219-best-public-score-santa-2026 -p data/public/pardheev -o || echo 'Second public notebook output unavailable'
+          fi
+          python swarm/public_bootstrap.py merge --puzzles data/puzzles.csv --base state/base.csv --public data/public --output state/public_base.csv --report logs/bootstrap.json
+          cp state/public_base.csv state/base.csv
 
       - name: Research papers and ask one free coding model
         env:
