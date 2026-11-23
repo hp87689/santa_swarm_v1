@@ -1,100 +1,70 @@
-# Santa Swarm v1.1 — beginner setup
+# Santa Swarm 2026 — v2: Research + Evolution
 
-This is an **autonomous, budget-$0, experimental optimization loop**, not a fully developed elite multi-agent optimizer. It:
+**Cost target: $0.** This is a *working but experimental* multi-strategy evolution loop, not a guaranteed winning solver. It is intended to upgrade your **validated 128,505-instruction champion** without starting over. Never discard your champion backup.
 
-1. Downloads the official Santa 2026 puzzles with your private Kaggle token.
-2. Restores its last best valid submission from a previous GitHub Actions artifact.
-3. When the incumbent score exceeds 140,000, attempts to import published Apache-licensed public Kaggle notebook output CSVs and validates each shorter program independently.
-4. Looks up public mathematical research metadata (Crossref and public GitHub repositories).
-5. Asks one free OpenRouter model to write an optimization function.
-6. Tests that untrusted model code in a disposable no-network Docker container.
-7. Independently rechecks every improved puzzle with a trusted exact interpreter.
-8. Saves the best validated program per puzzle into a downloadable, reusable artifact.
+## What changed from v1.1
 
-It does NOT publish credentials, upload Kaggle input datasets to the repository, guarantee improvements, submit to Kaggle automatically, or promise a winning score. Further algorithm development will be needed.
+- The existing **independent verifier** (`swarm/core.py`) remains unchanged. Every proposed shorter program must survive exact arithmetic replay.
+- Three local algorithm families compete **without consuming any OpenRouter requests**:
+  - `pair`: resynthesize two adjacent instructions with one existing-register arithmetic instruction.
+  - `forward`: eliminate duplicated values and redirect later uses to another live register when safe.
+  - `prune`: backwards register-aware dead-code elimination.
+- Each run explores up to 250 puzzles and records **per-strategy results** in `logs/deterministic.json`.
+- A real research collector reads bounded excerpts from **public research GitHub READMEs and arXiv abstracts**, rather than title metadata alone. It does NOT download every paper PDF or automatically execute copied code. See `docs/RESEARCH.md`.
+- The AI now has three roles (mathematician, coder, critic) executed sequentially using `openrouter/free`, up to three calls per run. It writes a bounded `candidate.py` optimizer, which is tested in a no-network container. The critic is advisory; the verifier alone decides validity.
+- Saved `state/agent_history.json` remembers recent AI attempts between runs. Logs distinguish deterministic improvements from AI improvements.
+- Previous `champion` GitHub Actions artifact is still restored, so the starting score should remain **128,505 or lower** if that artifact is available.
+- Public output imports are attempted on manual runs and periodically, even when your champion is already strong. Only shorter programs that pass the exact validator are admitted.
 
-## Before you start
+**Not yet implemented:** full multi-island populations, CP-SAT/MILP mathematical search, e-graph equality saturation, performance-optimized C++ LNS, automatic paper-to-implementation synthesis, and Kaggle leaderboard submission. These are research milestones, not hidden v2 features.
 
-- Visit https://www.kaggle.com/competitions/santa-2026 and **Join** / accept the rules.
-- Make sure your GitHub repository is **Public** for free standard GitHub Actions minutes.
-- Create a new **Kaggle API token** at https://www.kaggle.com/settings/api (the `KAGGLE_API_TOKEN` method), and keep it private.
-- Your existing OpenRouter API key can be used. In https://openrouter.ai/settings/keys make sure spending limits prevent any paid charges; this starter specifies only `openrouter/free`.
+## Beginner-friendly upgrade (Windows + GitHub Desktop)
 
-## Put this code on GitHub without command-line programming
+1. On GitHub, open **Actions** → latest successful **Santa Swarm — evolve and validate** run. Download the `champion` artifact to your PC and keep a backup of `champion.csv` somewhere safe.
+2. Download this v2 ZIP. Windows: right click → **Extract All**.
+3. Open the extracted `santa_swarm_v2` folder, select all the files and folders **inside** it (including the `.github` folder) and **copy them into the same local GitHub repository folder you have used for v1.1**. When Windows asks, choose **Replace the files in the destination**. **DO NOT delete the existing `.git` folder** or rename your GitHub repository. There is no reason to recreate your API secrets.
+4. Open **GitHub Desktop** → select your existing Santa Swarm repository → **Changes**. Verify it lists updated/new files. Enter commit summary `Upgrade Santa Swarm to v2` → **Commit to main** → **Push origin**.
+5. Open your GitHub repository in the browser → **Actions** → **Santa Swarm — evolve and validate** → **Run workflow** → `main` → **Run workflow**.
+6. Open that run. Expand **Evolve deterministic algorithms (no AI quota used)** and **Independently verify every improvement and preserve champion**. The first shows what the algorithm families did; the second shows the additional AI outcome.
+7. Download artifacts after it succeeds. `champion` contains `champion.csv`, `report.json`, and `agent_history.json`. `research-and-logs` contains `logs/deterministic.json`, `logs/research.json`, `logs/proposal.json`, `logs/bootstrap.json` and `scratch/sandbox.log` when available.
 
-1. Download and extract the provided ZIP file to a new Windows folder, e.g. `Documents/Santa-Swarm`.
-2. Install the free GitHub Desktop app at https://desktop.github.com and sign in.
-3. In GitHub Desktop choose **File > Add local repository**, select the extracted `santa_swarm_v1` folder. If asked to **create a repository here**, confirm.
-4. In the lower-left corner, enter commit summary `Initial Santa Swarm`, click **Commit to main**.
-5. Click **Publish repository**. Enter name `santa-swarm-2026` and **uncheck** `Keep this code private`.
-6. Open your new repo in the browser; check that the file `.github/workflows/swarm.yml` exists.
+**NOTE:** Never upload your `KAGGLE_API_TOKEN` or `OPENROUTER_API_KEY` to GitHub as plain source files or paste them into ChatGPT. The previous repository secrets remain valid.
 
-## Add your two GitHub Actions secrets
+## What scores will mean
 
-In GitHub open the repo, then choose **Settings > Secrets and variables > Actions > New repository secret**.
+- **Public bootstrap** (`logs/bootstrap.json`): change from imported public notebooks (if accessible). This may be zero.
+- **Deterministic evolution** (`logs/deterministic.json`): score before and after `pair`, `forward`, and `prune` search.
+- **AI evolution** (`state/report.json`): score before and after the model-generated `candidate.py` was attempted.
+- **Overall improvement**: compare the current `state/report.json` new score to your original saved baseline (128,505). Do not confuse individual stage reports with total per-run progress.
 
-Create:
+Zero instructions saved is possible for strong starting solutions; the system must NEVER report invented progress.
 
-- `KAGGLE_API_TOKEN` — the Kaggle token text you generated under the modern API section. NOT a GitHub token.
-- `OPENROUTER_API_KEY` — your OpenRouter API key text.
+## Free cloud limits and reliability
 
-**Never paste keys into source files, commit messages, GitHub Issues, or this chat.**
+- Current public GitHub **standard hosted runners** are normally free, but GitHub enforces acceptable-use rules, job length caps, storage and retention limits. This workflow runs 4 times/day in short restartable jobs. It is *not* a permanent cloud server.
+- OpenRouter `openrouter/free` is rate-limited (currently 50/day without purchased credits, subject to change). At most 3 calls per run × 4 runs = 12 possible calls/day for this workflow, leaving room for retries/manual runs. OpenRouter model routing may be unavailable temporarily.
+- Champion artifacts are retained for 7 days. If successful runs stop, your champion may expire; keep local backups. If restoration fails, the official sample would be used as the fallback. Always verify **previous_score** before trusting a new run.
+- Public GitHub code becomes visible to everyone. Do not commit Kaggle credentials, imported competition puzzle data, or tokens.
 
-## Start the first run
+## Research and competition rules
 
-1. In your repository click **Actions**.
-2. Select **Santa Swarm — evolve and validate** in the left column.
-3. Click **Run workflow** > **Run workflow**.
-4. Open the newest run. All steps should show a green checkmark.
-5. Expand **Independently validate and merge shorter programs**. It prints score and instructions saved.
-6. Under the run's **Artifacts**, download `champion`. Its `champion.csv` is a validated complete submission you can upload manually to the competition.
+The research broker fetches READMEs and arXiv abstracts as **untrusted data**. The AI cannot execute source text or browse arbitrary websites in the sandbox. Code from external projects can be incorporated only under compatible licenses/attribution and Kaggle rules. The package itself copies no third-party optimizer source. See `docs/RESEARCH.md` for public links and proposed future solver families.
 
-The workflow also runs automatically four times daily. Each successful run can recover the champion from the latest successful run. Artifact retention is finite (7 days here); keep periodic personal backups.
+## Local self-tests (optional)
 
-## Download a Kaggle submission
+Run: `python -m unittest discover -s tests -v`. There are no third-party Python dependencies for trusted logic. CI automatically runs this step before downloading the Kaggle data.
 
-On the Actions run page, download the `champion` artifact. Unzip it. Upload `champion.csv` at https://www.kaggle.com/competitions/santa-2026/submit using your account; watch submission caps.
+## If the next run fails
 
-## How to read the logs
+- `Missing KAGGLE_API_TOKEN`: make sure your **GitHub Actions secret** still exists, then rerun the **new** workflow.
+- `No AI candidate`: OpenRouter may be unavailable or the free quota exceeded; deterministic evolution should still run and save the valid previous champion.
+- `No previous champion`: your existing successful run's artifact must still be downloadable; otherwise keep your backup and ask for restore steps instead of accepting the sample baseline.
+- `No improvements`: inspect `logs/deterministic.json` and `logs/proposal.json`; this indicates a hard local optimum or limited search, not necessarily a software error.
 
-- `previous_score`: exact baseline instructions.
-- `new_score`: total instructions in the verified champion (lower is better).
-- `instructions_saved`: improvement in that run.
-- `puzzles_improved`: puzzles whose instruction count decreased.
-- `invalid_candidates_rejected`: programs rejected by the independent validator.
+No automatic submissions are made on your behalf. Submit a validated `champion.csv` manually on Kaggle when appropriate and within competition submission limits.
 
-An improvement of 0 is not a bug. LLM-generated mathematical code is experimental and often not useful. It will need more advanced algorithm families to approach top-tier Kaggle results.
+## Additional source retrieval
 
-## Troubleshooting
+On manual runs and approximately every fourth scheduled run, the workflow also downloads public Kaggle notebook **source** (`kaggle kernels pull`) for two known notebooks. This code is treated as untrusted research data and never executed. The research digest excerpts these files when available, alongside fetched READMEs and arXiv abstracts. The workflow remains functional if a notebook cannot be downloaded.
 
-- **Missing Kaggle token / download failed**: check the secret name, Kaggle token status, and whether you joined/accepted competition rules.
-- **No AI candidate**: check OpenRouter key and quota. The workflow should still produce a valid baseline when the agent cannot generate code.
-- **Docker failure**: check the container step's logs. The trusted validation step should still preserve the last baseline.
-- **No available artifact**: the run must complete successfully before the `champion` artifact is available.
-- **Workflow does not show up in Actions**: ensure `.github/workflows/swarm.yml` was committed on the default branch.
-- **Can't afford anything**: do not enable paid runners, larger GitHub runners, paid models or paid HF Spaces. Stop the workflow if services request billing details.
-
-## Terms and ethics
-
-Public repositories and standard GitHub-hosted runner usage are normally free, but GitHub restricts abuse and resource-intensive unrelated workloads. Keep the current schedule conservative. Program optimization is software development for this repository; do not convert this to nonstop background mining, or use extensions to bypass quotas. Check competition-specific rules on external data, team participation, publicly sharing results, and code licensing.
-
-Links: https://docs.github.com/en/actions/concepts/billing-and-usage ; https://openrouter.ai/collections/free-models ; https://github.com/Kaggle/kaggle-cli ; https://huggingface.co/docs/hub/spaces-overview
-
-## Reality check and next major upgrades
-
-This starter has one AI coder, a lightweight public research-metadata collector, public notebook OUTPUT CSV bootstrapping, deterministic dead-code pruning, and per-puzzle survivor selection. That is a real autonomous code-experiment loop, **not yet the finished multi-island swarm**. For a serious winning attempt, the next implementation milestones are:
-
-1. Validate the official Kaggle sample score, import strong *licensed* public notebook algorithms, and compare baseline portfolios.
-2. Add multiple competing search families (factorization/dictionaries, beam search, backward synthesis, DAG rewriting, joint target planning, register allocation).
-3. Add population/lineage management, per-family experiment arms, adversarial correctness tests, and hard per-puzzle compute budgets.
-4. Upgrade the research broker from metadata-only to paper abstract/full-text retrieval where access and licensing permit; reuse discoveries rather than repeated downloads.
-5. Add optional Kaggle notebook compute when the CPU-only GitHub workflow has been shown to work.
-
-The official deadline listed for **entry** is January 21, 2027, and the **final submission** deadline is January 28, 2027 (11:59 PM UTC). These are different deadlines.
-
-**Storage caution:** GitHub Free includes a 500 MB Actions artifact storage quota. We retain champions for seven days and research logs for three days. The workflow can recover recent artifacts after restarts, but back up your latest `champion.csv` personally and reduce retention if storage becomes tight.
-
-
-## Upgrading from v1 to v1.1
-
-See `UPGRADE_TO_V1_1.md`. In `research-and-logs`, look at `logs/bootstrap.json` for the public-reference improvement; the final `state/report.json` measures only further AI optimization after that bootstrap.
+After verification, `swarm/feedback.py` records whether the last AI-generated candidate actually saved instructions. This evidence is loaded into the next agent's reasoning so it can avoid repeating unsuccessful approaches.

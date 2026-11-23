@@ -3,7 +3,7 @@ name: Santa Swarm — evolve and validate
 on:
   workflow_dispatch:
   schedule:
-    # 4 runs/day, avoiding the top of the hour to reduce scheduling delays.
+    # Conservative schedule: four restartable runs per day.
     - cron: '17 1,7,13,19 * * *'
 
 permissions:
@@ -29,7 +29,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Test trusted validator
+      - name: Test trusted validator and search strategies
         run: python -m unittest discover -s tests -v
 
       - name: Install official Kaggle CLI
@@ -39,79 +39,106 @@ jobs:
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
         run: |
-          test -n "$KAGGLE_API_TOKEN" || { echo 'Missing KAGGLE_API_TOKEN repository secret'; exit 1; }
+          test -n "$KAGGLE_API_TOKEN" || { echo 'Missing KAGGLE_API_TOKEN secret'; exit 1; }
           mkdir -p data
           kaggle competitions download santa-2026 -p data --unzip
           test -s data/puzzles.csv
           test -s data/sample_submission.csv
 
-      - name: Recover most recent successful champion artifact
+      - name: Recover most recent champion and experiment memory
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          mkdir -p state logs
-          for run_id in $(gh run list --workflow swarm.yml --status completed --limit 25 --json databaseId,conclusion --jq '.[] | select(.conclusion == "success") | .databaseId'); do
+          mkdir -p state logs scratch
+          for run_id in $(gh run list --workflow swarm.yml --status completed --limit 30 --json databaseId,conclusion --jq '.[] | select(.conclusion == "success") | .databaseId'); do
             if gh run download "$run_id" --name champion --dir state; then
-              echo "Restored champion from run $run_id"
+              echo "Restored champion and memory from successful run $run_id"
               break
             fi
           done
-          if [ -f state/champion.csv ]; then cp state/champion.csv state/base.csv; else cp data/sample_submission.csv state/base.csv; fi
+          if [ -s state/champion.csv ]; then
+            cp state/champion.csv state/base.csv
+          else
+            cp data/sample_submission.csv state/base.csv
+          fi
+          cp state/base.csv state/start_of_run.csv
 
-      - name: Bootstrap from Apache-licensed public Kaggle notebook outputs
+      - name: Periodically import complete public notebook outputs when available
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          RUN_NUMBER: ${{ github.run_number }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           mkdir -p data/public logs
-          if python swarm/public_bootstrap.py needs --puzzles data/puzzles.csv --base state/base.csv; then
-            # Published Apache-2.0 notebooks. We consume their data files ONLY.
-            # A notebook may not publish a complete submission CSV; that is safe
-            # and is reported as no import rather than a claimed improvement.
-            kaggle kernels output avazaku/elf-calc-milp-recipe-selection-target-rebuilds -p data/public/avazaku -o || echo 'First public notebook output unavailable'
-            kaggle kernels output pardheev/132-219-best-public-score-santa-2026 -p data/public/pardheev -o || echo 'Second public notebook output unavailable'
+          if [ "$EVENT_NAME" = 'workflow_dispatch' ] || [ $((RUN_NUMBER % 4)) -eq 0 ]; then
+            kaggle kernels output avazaku/elf-calc-milp-recipe-selection-target-rebuilds -p data/public/avazaku -o || echo 'Public notebook output unavailable'
+            kaggle kernels output pardheev/132-219-best-public-score-santa-2026 -p data/public/pardheev -o || echo 'Public notebook output unavailable'
           fi
           python swarm/public_bootstrap.py merge --puzzles data/puzzles.csv --base state/base.csv --public data/public --output state/public_base.csv --report logs/bootstrap.json
           cp state/public_base.csv state/base.csv
 
-      - name: Research papers and ask one free coding model
+      - name: Periodically download public Kaggle notebook source for research (never execute it)
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          RUN_NUMBER: ${{ github.run_number }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          mkdir -p data/research_notebooks
+          if [ "$EVENT_NAME" = 'workflow_dispatch' ] || [ $((RUN_NUMBER % 4)) -eq 0 ]; then
+            kaggle kernels pull avazaku/elf-calc-milp-recipe-selection-target-rebuilds -p data/research_notebooks/avazaku -m || echo 'First public notebook source unavailable'
+            kaggle kernels pull goodpjw2008/santa-2026-lns-cp-sat-recombine-lb-133-804 -p data/research_notebooks/goodpjw -m || echo 'Second public notebook source unavailable'
+          fi
+
+      - name: Evolve deterministic algorithms (no AI quota used)
+        run: |
+          python swarm/evolve.py data/puzzles.csv state/base.csv state/evolved.csv logs/deterministic.json \
+            --generation "${{ github.run_number }}" --max-puzzles 250 --max-seconds 220
+          cp state/evolved.csv state/base.csv
+
+      - name: Research full public abstracts/READMEs and run three AI agent roles
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
-        run: python swarm/agent.py
+        run: python swarm/agent_v2.py
 
-      - name: Evaluate model code in an isolated container without credentials or network
+      - name: Test AI-generated code in networkless container
         run: |
           mkdir -p scratch
           chmod 777 scratch
-          timeout 650s docker run --rm --network none --cpus 1 --memory 2g \
+          timeout 850s docker run --rm --network none --cpus 1 --memory 2g \
             --pids-limit 96 --read-only --cap-drop ALL --security-opt no-new-privileges \
             --user 65534:65534 --tmpfs /tmp:rw,size=64m \
             -v "$PWD":/workspace:ro -v "$PWD/scratch":/output:rw \
             python:3.12-slim \
             python -B /workspace/swarm/runner.py \
-            /workspace/data/puzzles.csv /workspace/state/base.csv \
-            /workspace/candidate.py /output/attempt.csv \
-            --generation "${{ github.run_number }}" \
-            > scratch/sandbox.log 2>&1 || echo 'Sandbox failed or timed out; retaining baseline'
+              /workspace/data/puzzles.csv /workspace/state/base.csv \
+              /workspace/candidate.py /output/attempt.csv \
+              --generation "${{ github.run_number }}" --per-puzzle-seconds 0.45 \
+            > scratch/sandbox.log 2>&1 || echo 'AI sandbox unavailable; deterministic champion preserved'
           tail -20 scratch/sandbox.log || true
 
-      - name: Independently validate and merge shorter programs
+      - name: Independently verify every improvement and preserve champion
         run: |
-          python swarm/verify.py data/puzzles.csv state/base.csv scratch/attempt.csv state/champion.csv state/report.json
+          python swarm/verify.py data/puzzles.csv state/base.csv scratch/attempt.csv state/champion.csv state/report.json \
+            --original state/start_of_run.csv --bootstrap-report logs/bootstrap.json --deterministic-report logs/deterministic.json
           cat state/report.json
 
-      - name: Persist champion for next run
+      - name: Record scored outcomes as future agent memory
+        run: python swarm/feedback.py
+
+      - name: Save champion and experiment memory for the next workflow
         uses: actions/upload-artifact@v4
         with:
           name: champion
           path: |
             state/champion.csv
             state/report.json
+            state/agent_history.json
           retention-days: 7
           if-no-files-found: error
 
-      - name: Save research and sandbox logs
+      - name: Save research and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:

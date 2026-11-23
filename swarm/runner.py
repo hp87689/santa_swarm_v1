@@ -29,6 +29,7 @@ def main():
     parser.add_argument("candidate")
     parser.add_argument("output")
     parser.add_argument("--generation", type=int, default=1)
+    parser.add_argument("--per-puzzle-seconds", type=float, default=0.45)
     args = parser.parse_args()
     puzzles = load_puzzles(args.puzzles)
     baseline = load_submission(args.baseline)
@@ -44,7 +45,7 @@ def main():
         original = baseline[pid]
         best = prune_dead_code(p, original)
         if optimizer:
-            signal.setitimer(signal.ITIMER_REAL, 0.18)
+            signal.setitimer(signal.ITIMER_REAL, max(0.05, min(args.per_puzzle_seconds, 2.0)))
             try:
                 seed = int(hashlib.sha256(f"{pid}:{args.generation}".encode()).hexdigest()[:12], 16)
                 data = {"id": pid, "seeds": list(p.seeds), "targets": list(p.targets),
