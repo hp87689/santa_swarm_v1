@@ -52,8 +52,10 @@ def main():
     history = history[-12:]
     run = int(os.environ.get('GITHUB_RUN_NUMBER', '1'))
     topic = TOPICS[run % len(TOPICS)]
+    parent_path = Path('state/last_candidate.py')
+    parent_code = parent_path.read_text(encoding='utf-8', errors='replace')[:7000] if parent_path.exists() else ''
     baseline = {}
-    for f in ('state/report.json', 'logs/deterministic.json'):
+    for f in ('state/report.json', 'logs/deterministic.json', 'logs/resynthesis.json'):
         if Path(f).exists():
             try: baseline[f] = json.loads(Path(f).read_text())
             except Exception: pass
@@ -82,11 +84,14 @@ def main():
                 'No file/process/network access; use only math,random,itertools,collections,'
                 'heapq,functools,bisect,operator imports. 48 registers, integer math, '
                 'exact division, strictly positive results <= value_limit, all puzzle targets must appear. '
-                'Candidate will be called many times, under 0.18 seconds per puzzle. '
-                'Do not merely run dead-code pruning. Source <= 17000 chars. '
+                'Candidate will be called many times, under 0.45 seconds per puzzle. '
+                'Do not merely run dead-code pruning or copy public CSV solutions. '
+                'Explore a different arithmetic identity or bounded graph rewrite. '
+                'Source <= 17000 chars. '
                 'Program and puzzle are standard Python data structures. '
                 'MATH HYPOTHESIS: '+json.dumps(plan)[:4700]+'\n'
                 'Context last run: '+json.dumps(baseline)[:1300]+'\n'
+                'Previous code genotype (may be broken; analyze and mutate rather than copy blindly): '+parent_code+'\n'
                 'Return JSON ONLY with keys idea and code (a Python source string).',
                 tokens=2900)
             code, idea = extract_code(raw)

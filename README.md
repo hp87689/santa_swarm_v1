@@ -1,70 +1,80 @@
-# Santa Swarm 2026 — v2: Research + Evolution
+# Santa Swarm v2.1 — Mathematical Resynthesis (experimental)
 
-**Cost target: $0.** This is a *working but experimental* multi-strategy evolution loop, not a guaranteed winning solver. It is intended to upgrade your **validated 128,505-instruction champion** without starting over. Never discard your champion backup.
+**Goal: improve the code-generated programs beyond an already strong 128,504-instruction champion.**
 
-## What changed from v1.1
+This is an **experimental upgrade**, not a verified new Kaggle record. The new optimizer has passed synthetic tests but has **not yet been run against your actual Kaggle data or 128,504 champion** in this environment. It may find 0 improvements on a strong solution. Any claim of progress requires the independent validator's `OVERALL EVOLUTION` report.
 
-- The existing **independent verifier** (`swarm/core.py`) remains unchanged. Every proposed shorter program must survive exact arithmetic replay.
-- Three local algorithm families compete **without consuming any OpenRouter requests**:
-  - `pair`: resynthesize two adjacent instructions with one existing-register arithmetic instruction.
-  - `forward`: eliminate duplicated values and redirect later uses to another live register when safe.
-  - `prune`: backwards register-aware dead-code elimination.
-- Each run explores up to 250 puzzles and records **per-strategy results** in `logs/deterministic.json`.
-- A real research collector reads bounded excerpts from **public research GitHub READMEs and arXiv abstracts**, rather than title metadata alone. It does NOT download every paper PDF or automatically execute copied code. See `docs/RESEARCH.md`.
-- The AI now has three roles (mathematician, coder, critic) executed sequentially using `openrouter/free`, up to three calls per run. It writes a bounded `candidate.py` optimizer, which is tested in a no-network container. The critic is advisory; the verifier alone decides validity.
-- Saved `state/agent_history.json` remembers recent AI attempts between runs. Logs distinguish deterministic improvements from AI improvements.
-- Previous `champion` GitHub Actions artifact is still restored, so the starting score should remain **128,505 or lower** if that artifact is available.
-- Public output imports are attempted on manual runs and periodically, even when your champion is already strong. Only shorter programs that pass the exact validator are admitted.
+## Why v2 got stuck
 
-**Not yet implemented:** full multi-island populations, CP-SAT/MILP mathematical search, e-graph equality saturation, performance-optimized C++ LNS, automatic paper-to-implementation synthesis, and Kaggle leaderboard submission. These are research milestones, not hidden v2 features.
+- The old deterministic code only pruned dead code, redirected duplicate values, or collapsed 2 instructions to 1.
+- These shallow patterns are often already eliminated from strong public baselines.
+- `previous_score == new_score` in `VALIDATED CHAMPION` measures the AI stage alone. Always inspect `OVERALL EVOLUTION` and `logs/deterministic.json`.
+- Previous AI candidate code was not preserved as a source-code parent; it was regenerated from scratch each run.
 
-## Beginner-friendly upgrade (Windows + GitHub Desktop)
+## New in v2.1
 
-1. On GitHub, open **Actions** → latest successful **Santa Swarm — evolve and validate** run. Download the `champion` artifact to your PC and keep a backup of `champion.csv` somewhere safe.
-2. Download this v2 ZIP. Windows: right click → **Extract All**.
-3. Open the extracted `santa_swarm_v2` folder, select all the files and folders **inside** it (including the `.github` folder) and **copy them into the same local GitHub repository folder you have used for v1.1**. When Windows asks, choose **Replace the files in the destination**. **DO NOT delete the existing `.git` folder** or rename your GitHub repository. There is no reason to recreate your API secrets.
-4. Open **GitHub Desktop** → select your existing Santa Swarm repository → **Changes**. Verify it lists updated/new files. Enter commit summary `Upgrade Santa Swarm to v2` → **Commit to main** → **Push origin**.
-5. Open your GitHub repository in the browser → **Actions** → **Santa Swarm — evolve and validate** → **Run workflow** → `main` → **Run workflow**.
-6. Open that run. Expand **Evolve deterministic algorithms (no AI quota used)** and **Independently verify every improvement and preserve champion**. The first shows what the algorithm families did; the second shows the additional AI outcome.
-7. Download artifacts after it succeeds. `champion` contains `champion.csv`, `report.json`, and `agent_history.json`. `research-and-logs` contains `logs/deterministic.json`, `logs/research.json`, `logs/proposal.json`, `logs/bootstrap.json` and `scratch/sandbox.log` when available.
+1. **New arithmetic window resynthesizer, written for this project** (`swarm/resynthesis.py`):
+   - Replay the program and compute register liveness and first required target occurrences.
+   - Find windows of **3–10 instructions** and reason about the register and target values that must survive their replacement.
+   - Construct one- or two-instruction replacements using *new intermediate arithmetic values*, not just instructions already in the candidate.
+   - Try two-output recipes when a window has two required register values.
+   - Verify every proposed change with the independent `core.replay()` and prune only after validation.
+2. **New bounded driver** (`swarm/resynth_driver.py`): samples up to 80 puzzles per run, spends at most 4 seconds on each, and records searches and savings in `logs/resynthesis.json`.
+3. **AI source-code heredity**: the latest AI-generated optimizer is retained as `state/last_candidate.py` in the GitHub champion artifact, then used as an untrusted parent for the next model-generated mutation. This is actual code evolution, although a useful mutation is not guaranteed.
+4. **No repeated public-output imports once a champion exists**. Public notebook material may still be read for research. Kaggle public outputs are only an initial recovery/bootstrap if your champion artifact is lost.
+5. Separate reporting for deterministic cleanup, arithmetic resynthesis and AI-generated optimizer. Exact validator remains independent.
 
-**NOTE:** Never upload your `KAGGLE_API_TOKEN` or `OPENROUTER_API_KEY` to GitHub as plain source files or paste them into ChatGPT. The previous repository secrets remain valid.
+Not yet included: exact CP-SAT, 3–8 instruction **multi-output** search, C++ large-neighborhood optimization, equality-saturation e-graphs, full multi-island evolving populations, or an automated Kaggle submission. Those require further engineering and real-data evaluation.
 
-## What scores will mean
+## Install on Windows using GitHub Desktop
 
-- **Public bootstrap** (`logs/bootstrap.json`): change from imported public notebooks (if accessible). This may be zero.
-- **Deterministic evolution** (`logs/deterministic.json`): score before and after `pair`, `forward`, and `prune` search.
-- **AI evolution** (`state/report.json`): score before and after the model-generated `candidate.py` was attempted.
-- **Overall improvement**: compare the current `state/report.json` new score to your original saved baseline (128,505). Do not confuse individual stage reports with total per-run progress.
+1. **First back up the existing champion.** On GitHub open **Actions → latest successful Santa Swarm workflow → Artifacts → champion**, download and save its `champion.csv` somewhere outside your repository.
+2. Download this ZIP and Windows right-click → **Extract All**.
+3. Open the resulting `santa_swarm_v2_1` folder. **Copy the files INSIDE it** into your existing local `Santa-Swarm-2026` GitHub repository folder. Choose *Replace files in destination* when prompted. **Do not delete the `.git` directory**, do not delete your repository, and do not overwrite/delete existing GitHub secrets.
+4. GitHub Desktop → **Changes** → commit `Add arithmetic resynthesis v2.1` → **Push origin**.
+5. On GitHub: **Actions → Santa Swarm — evolve and validate → Run workflow → main → Run workflow**. Use a *new workflow run*, not “Re-run jobs” on an old one.
+6. Open the successful run and locate the step **Genuine arithmetic window resynthesis**. It prints `GENUINE RESYNTHESIS: {...}`.
+7. Also inspect **Independently verify every improvement** for `OVERALL EVOLUTION: {...}`. This is the entire run's score change.
+8. Under **Artifacts → research-and-logs**, download `logs/resynthesis.json` and `logs/proposal.json` for troubleshooting. Do not send API keys.
 
-Zero instructions saved is possible for strong starting solutions; the system must NEVER report invented progress.
+## What success or failure looks like
 
-## Free cloud limits and reliability
+The new research search reports:
 
-- Current public GitHub **standard hosted runners** are normally free, but GitHub enforces acceptable-use rules, job length caps, storage and retention limits. This workflow runs 4 times/day in short restartable jobs. It is *not* a permanent cloud server.
-- OpenRouter `openrouter/free` is rate-limited (currently 50/day without purchased credits, subject to change). At most 3 calls per run × 4 runs = 12 possible calls/day for this workflow, leaving room for retries/manual runs. OpenRouter model routing may be unavailable temporarily.
-- Champion artifacts are retained for 7 days. If successful runs stop, your champion may expire; keep local backups. If restoration fails, the official sample would be used as the fallback. Always verify **previous_score** before trusting a new run.
-- Public GitHub code becomes visible to everyone. Do not commit Kaggle credentials, imported competition puzzle data, or tokens.
+```json
+{
+  "method":"bounded_arithmetic_resynthesis",
+  "puzzles_attempted":80,
+  "puzzles_improved":0,
+  "windows_tested":40000,
+  "instructions_saved":0,
+  "previous_score":128504,
+  "new_score":128504
+}
+```
 
-## Research and competition rules
+**Example only.** `windows_tested > 0` and `instructions_saved = 0` means it really searched but found no accepted shorter program; that is not a bug by itself. `windows_tested = 0` or `errors > 0` means we should inspect diagnostics. The `OVERALL EVOLUTION` log tells us the net improvement, if any, across the entire workflow.
 
-The research broker fetches READMEs and arXiv abstracts as **untrusted data**. The AI cannot execute source text or browse arbitrary websites in the sandbox. Code from external projects can be incorporated only under compatible licenses/attribution and Kaggle rules. The package itself copies no third-party optimizer source. See `docs/RESEARCH.md` for public links and proposed future solver families.
+## Runtime / zero-cost limits
 
-## Local self-tests (optional)
+- GitHub Actions uses short scheduled jobs, not a permanent free virtual server. The workflow runs four times daily; GitHub may delay schedules or enforce appropriate-use limits.
+- OpenRouter is optional for the deterministic optimizer. The three-stage AI research calls may fail due to free-model availability or quotas without preventing mathematically validated deterministic searches.
+- **All LLM code remains untrusted** and runs only in a networkless Docker sandbox, without API credentials. Trusted host code never imports it. The retained AI source is only fed to the next generation as text.
+- GitHub artifacts expire (7 days for champion); periodically back up your champion locally.
 
-Run: `python -m unittest discover -s tests -v`. There are no third-party Python dependencies for trusted logic. CI automatically runs this step before downloading the Kaggle data.
+## Local verification and tests
 
-## If the next run fails
+`python -m unittest discover -s tests -v`
 
-- `Missing KAGGLE_API_TOKEN`: make sure your **GitHub Actions secret** still exists, then rerun the **new** workflow.
-- `No AI candidate`: OpenRouter may be unavailable or the free quota exceeded; deterministic evolution should still run and save the valid previous champion.
-- `No previous champion`: your existing successful run's artifact must still be downloadable; otherwise keep your backup and ask for restore steps instead of accepting the sample baseline.
-- `No improvements`: inspect `logs/deterministic.json` and `logs/proposal.json`; this indicates a hard local optimum or limited search, not necessarily a software error.
+19 local tests passed on creation, including independent target checking, exact integer semantics, and a miniature original 3-instruction → 2-instruction arithmetic synthesis example. This is **not** a benchmark of your actual 128,504 Kaggle champion.
 
-No automatic submissions are made on your behalf. Submit a validated `champion.csv` manually on Kaggle when appropriate and within competition submission limits.
+## Research ideas used
 
-## Additional source retrieval
+The approach is inspired by the mathematical concept of straight-line program resynthesis and public accounts of register-aware local search, not by copying competitors' finished submissions. The project's new optimizer code is independently written. For further reading:
 
-On manual runs and approximately every fourth scheduled run, the workflow also downloads public Kaggle notebook **source** (`kaggle kernels pull`) for two known notebooks. This code is treated as untrusted research data and never executed. The research digest excerpts these files when available, alongside fetched READMEs and arXiv abstracts. The workflow remains functional if a notebook cannot be downloaded.
+- [Kaggle Santa 2026 rules and data](https://www.kaggle.com/competitions/santa-2026)
+- [Hansen0223/Santa_2026 research repository](https://github.com/Hansen0223/Santa_2026)
+- [Juan-Severiano/santa-2026 on Rust LNS and graph cut experiments](https://github.com/Juan-Severiano/santa-2026)
+- [egg: Fast and Extensible Equality Saturation](https://arxiv.org/abs/2004.03082)
 
-After verification, `swarm/feedback.py` records whether the last AI-generated candidate actually saved instructions. This evidence is loaded into the next agent's reasoning so it can avoid repeating unsuccessful approaches.
+Do not represent imported public scores as discoveries made by this swarm.

@@ -58,22 +58,26 @@ jobs:
             fi
           done
           if [ -s state/champion.csv ]; then
+            echo "HAS_CHAMPION=true" >> "$GITHUB_ENV"
             cp state/champion.csv state/base.csv
           else
+            echo "HAS_CHAMPION=false" >> "$GITHUB_ENV"
             cp data/sample_submission.csv state/base.csv
           fi
           cp state/base.csv state/start_of_run.csv
 
-      - name: Periodically import complete public notebook outputs when available
+      - name: Initial public baseline bootstrap only (never replace our evolved champion with public imports)
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
           RUN_NUMBER: ${{ github.run_number }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           mkdir -p data/public logs
-          if [ "$EVENT_NAME" = 'workflow_dispatch' ] || [ $((RUN_NUMBER % 4)) -eq 0 ]; then
+          if [ "$HAS_CHAMPION" != 'true' ]; then
             kaggle kernels output avazaku/elf-calc-milp-recipe-selection-target-rebuilds -p data/public/avazaku -o || echo 'Public notebook output unavailable'
             kaggle kernels output pardheev/132-219-best-public-score-santa-2026 -p data/public/pardheev -o || echo 'Public notebook output unavailable'
+          else
+            echo 'Already have champion: no public output imports this run.'
           fi
           python swarm/public_bootstrap.py merge --puzzles data/puzzles.csv --base state/base.csv --public data/public --output state/public_base.csv --report logs/bootstrap.json
           cp state/public_base.csv state/base.csv
@@ -95,6 +99,13 @@ jobs:
           python swarm/evolve.py data/puzzles.csv state/base.csv state/evolved.csv logs/deterministic.json \
             --generation "${{ github.run_number }}" --max-puzzles 250 --max-seconds 220
           cp state/evolved.csv state/base.csv
+
+      - name: Genuine arithmetic window resynthesis (no API calls, original search)
+        run: |
+          python swarm/resynth_driver.py data/puzzles.csv state/base.csv state/resynthesized.csv logs/resynthesis.json \
+            --generation "${{ github.run_number }}" --max-puzzles 80 --max-seconds 360 \
+            --seconds-per-puzzle 4 --width 10 --windows 500
+          cp state/resynthesized.csv state/base.csv
 
       - name: Research full public abstracts/READMEs and run three AI agent roles
         env:
@@ -121,11 +132,15 @@ jobs:
       - name: Independently verify every improvement and preserve champion
         run: |
           python swarm/verify.py data/puzzles.csv state/base.csv scratch/attempt.csv state/champion.csv state/report.json \
-            --original state/start_of_run.csv --bootstrap-report logs/bootstrap.json --deterministic-report logs/deterministic.json
+            --original state/start_of_run.csv --bootstrap-report logs/bootstrap.json --deterministic-report logs/deterministic.json \
+            --resynthesis-report logs/resynthesis.json
           cat state/report.json
 
       - name: Record scored outcomes as future agent memory
         run: python swarm/feedback.py
+
+      - name: Preserve last AI source genotype for mutation next generation
+        run: python swarm/retain_agent.py
 
       - name: Save champion and experiment memory for the next workflow
         uses: actions/upload-artifact@v4
@@ -135,6 +150,8 @@ jobs:
             state/champion.csv
             state/report.json
             state/agent_history.json
+            state/last_candidate.py
+            state/last_successful_candidate.py
           retention-days: 7
           if-no-files-found: error
 
