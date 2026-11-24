@@ -2,9 +2,17 @@ name: Santa Swarm — evolve and validate
 
 on:
   workflow_dispatch:
+    inputs:
+      run_ai:
+        description: 'Attempt one free OpenRouter AI optimization (may use one fallback request)'
+        type: boolean
+        required: false
+        default: false
   schedule:
-    # Conservative schedule: four restartable runs per day.
-    - cron: '17 1,7,13,19 * * *'
+    # Free mathematical optimization runs four times daily.
+    # Only the first schedule attempts OpenRouter; others use no AI tokens.
+    - cron: '17 1 * * *'
+    - cron: '17 7,13,19 * * *'
 
 permissions:
   contents: read
@@ -114,13 +122,26 @@ jobs:
             --max-seconds 190 --max-puzzles 70 --seconds-per-trial 1.2
           cp state/portfolio.csv state/base.csv
 
-      - name: Research full public abstracts/READMEs and run three AI agent roles
+      - name: Show AI usage policy
+        run: |
+          echo 'AI POLICY: One optional research+coding request; at most one model fallback.'
+          echo 'Math optimizers run in every workflow; AI is scheduled once daily.'
+
+      - name: Attempt one free AI optimizer (daily schedule or manual opt-in)
+        if: ${{ (github.event_name == 'schedule' && github.event.schedule == '17 1 * * *') || (github.event_name == 'workflow_dispatch' && inputs.run_ai) }}
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          SANTA_AGENT_MODE: direct
         run: python swarm/agent_v2.py
 
+      - name: No OpenRouter usage this cycle
+        if: ${{ (github.event_name == 'schedule' && github.event.schedule != '17 1 * * *') || (github.event_name == 'workflow_dispatch' && !inputs.run_ai) }}
+        run: |
+          echo 'AI SKIPPED: running mathematical optimization without OpenRouter requests.'
+
       - name: Test AI-generated code in networkless container
+        if: ${{ hashFiles('candidate.py') != '' }}
         run: |
           mkdir -p scratch
           chmod 777 scratch
@@ -144,9 +165,11 @@ jobs:
           cat state/report.json
 
       - name: Record scored outcomes as future agent memory
+        if: ${{ (github.event_name == 'schedule' && github.event.schedule == '17 1 * * *') || (github.event_name == 'workflow_dispatch' && inputs.run_ai) }}
         run: python swarm/feedback.py
 
       - name: Preserve last AI source genotype for mutation next generation
+        if: ${{ hashFiles('candidate.py') != '' }}
         run: python swarm/retain_agent.py
 
       - name: Save champion and experiment memory for the next workflow
