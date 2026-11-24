@@ -17,6 +17,7 @@ def main():
     parser.add_argument("--bootstrap-report")
     parser.add_argument("--deterministic-report")
     parser.add_argument("--resynthesis-report")
+    parser.add_argument("--portfolio-report")
     args = parser.parse_args()
     puzzles = load_puzzles(args.puzzles)
     baseline = load_submission(args.baseline)
@@ -61,7 +62,8 @@ def main():
             'total_puzzles_improved_this_run': report['total_puzzles_improved_this_run']}))
     for key, source in [('public_bootstrap', args.bootstrap_report),
                         ('deterministic_evolution', args.deterministic_report),
-                        ('arithmetic_resynthesis', args.resynthesis_report)]:
+                        ('arithmetic_resynthesis', args.resynthesis_report),
+                        ('evolutionary_portfolio', args.portfolio_report)]:
         if source and Path(source).exists():
             try:
                 stage = json.loads(Path(source).read_text())

@@ -139,39 +139,74 @@ def _zero_price(value):
         return False
 
 
-def filter_free_text_models(payload):
-    """Allow only API-confirmed free chat completions with textual I/O.
+def filter_free_text_models(payload, *, server_filtered_chat=False):
+    """Select only zero-priced :free chat models.
 
-    In particular, never treat an embedding, image, classifier, or reranker
-    with ':free' in its slug as a usable text model.
+    OpenRouter's /models API sometimes omits optional per-request pricing and
+    endpoint metadata. A missing optional key is *not* evidence of a paid
+    model. The live query explicitly asks for text-input, text-output and
+    chat-completions models; missing endpoint metadata is accepted only when
+    server_filtered_chat=True. Explicit nonzero prices always reject.
     """
     if not isinstance(payload, dict) or not isinstance(payload.get('data'), list):
         raise OpenRouterResponseError('model_catalog_invalid')
     found = []
+    reasons = {}
+
+    def reject(reason):
+        reasons[reason] = reasons.get(reason, 0) + 1
+
     for model in payload['data']:
         if not isinstance(model, dict):
+            reject('malformed_entry')
             continue
         mid = model.get('id')
+        if not isinstance(mid, str) or not mid.endswith(':free'):
+            reject('not_free_variant')
+            continue
         pricing = model.get('pricing')
+        if not isinstance(pricing, dict):
+            reject('missing_price_evidence')
+            continue
+        if not (_zero_price(pricing.get('prompt')) and
+                _zero_price(pricing.get('completion'))):
+            reject('nonzero_or_unknown_token_price')
+            continue
+        # The optional request fee must be zero if supplied. The API's model
+        # catalog sometimes omits it completely for genuinely free models.
+        if pricing.get('request') is not None and not _zero_price(pricing['request']):
+            reject('nonzero_request_price')
+            continue
         arch = model.get('architecture')
+        if isinstance(arch, dict):
+            input_modes = arch.get('input_modalities')
+            output_modes = arch.get('output_modalities')
+            if input_modes is not None and 'text' not in input_modes:
+                reject('nontext_input')
+                continue
+            if output_modes is not None and 'text' not in output_modes:
+                reject('nontext_output')
+                continue
+        elif not server_filtered_chat:
+            reject('missing_architecture')
+            continue
         endpoints = model.get('endpoints')
-        if not (isinstance(mid, str) and mid.endswith(':free')
-                and isinstance(pricing, dict) and isinstance(arch, dict)
-                and isinstance(endpoints, list)):
-            continue
-        if not all(_zero_price(pricing.get(k)) for k in ('prompt', 'completion', 'request')):
-            continue
-        if '/api/v1/chat/completions' not in endpoints:
-            continue
-        if 'text' not in (arch.get('input_modalities') or []):
-            continue
-        if 'text' not in (arch.get('output_modalities') or []):
+        if endpoints is not None:
+            if (not isinstance(endpoints, list) or
+                    '/api/v1/chat/completions' not in endpoints):
+                reject('no_chat_endpoint')
+                continue
+        elif not server_filtered_chat:
+            reject('missing_endpoint_evidence')
             continue
         top = model.get('top_provider') or {}
         cap = top.get('max_completion_tokens') if isinstance(top, dict) else None
         if isinstance(cap, int) and cap < 1200:
+            reject('insufficient_output_capacity')
             continue
         found.append(mid)
+    API_CALLS.append({'model_catalog_total_entries': len(payload['data']),
+                      'model_catalog_filter_rejections': reasons})
     return sorted(set(found))
 
 
@@ -180,7 +215,7 @@ def discover_free_text_models(key):
     if _CATALOG is not None:
         return list(_CATALOG)
     req = urllib.request.Request(
-        'https://openrouter.ai/api/v1/models?output_modalities=text',
+        'https://openrouter.ai/api/v1/models?output_modalities=text&input_modalities=text&endpoints=%2Fapi%2Fv1%2Fchat%2Fcompletions',
         headers={'Authorization': 'Bearer ' + key, 'Accept': 'application/json',
                  'X-Title': 'SantaSwarm2026-LiveFreeModels'}, method='GET')
     try:
@@ -190,9 +225,14 @@ def discover_free_text_models(key):
         raise OpenRouterResponseError('model_catalog_http_' + str(err.code)) from None
     except (urllib.error.URLError, TimeoutError, ValueError, TypeError):
         raise OpenRouterResponseError('model_catalog_unavailable') from None
-    models = filter_free_text_models(payload)
+    models = filter_free_text_models(payload, server_filtered_chat=True)
     if not models:
-        raise OpenRouterResponseError('no_free_chat_models_in_catalog')
+        # OpenRouter officially guarantees openrouter/free routes only to free
+        # models. This allows one controlled attempt if catalog metadata has
+        # changed, rather than silently disabling all AI agents.
+        API_CALLS.append({'model_catalog_warning': 'no_free_variant_eligible',
+                          'action': 'fallback_to_openrouter_free'})
+        models = ['openrouter/free']
     _CATALOG = tuple(models)
     API_CALLS.append({'model_catalog_eligible_free_chat_models': len(models)})
     return list(_CATALOG)

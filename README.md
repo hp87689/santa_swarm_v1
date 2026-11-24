@@ -1,30 +1,58 @@
-# Santa Swarm v2.1.4 — Fix for old tests
+# Santa Swarm v2.2 — Multi-target Evolutionary Search
 
-This patch corrects outdated test mocks after the OpenRouter live free-model discovery upgrade. It changes **only two test files**. It does not change the actual swarm optimizer, its OpenRouter configuration, the Kaggle data, or the champion submission.
+This is an **experimental zero-cost, restartable optimizer** for Kaggle Santa 2026. It is not a promise of winning, and no actual score improvement below your 128,504-instruction champion has yet been measured on your private Kaggle run.
 
-## Why the workflow stopped
+## Important first: protect the champion
 
-The older rate-limit tests assumed the first OpenRouter request would be a POST to `/chat/completions`. Version 2.1.4 makes an initial GET request to `/models` to find zero-priced models. Old test mocks fed a simulated 429 chat-completion error into that initial catalog request, so the tests failed with `model_catalog_http_429` before testing the intended retry logic.
+Before installing, in GitHub go to **Actions → most recent successful run → Artifacts → champion**. Download and save `champion.csv` somewhere outside your GitHub repository. Never delete `.git`, `.github`, `state/champion.csv` if you have it, or your GitHub Actions secrets.
 
-The remaining older test expected the error text `api_error_code=429`, but the current code correctly classifies an embedded account-error response as `http_429:unknown` (non-retryable).
+## What is new in v2.2?
 
-## Install on Windows
+1. `swarm/beam_resynthesis.py`: a **new target-directed beam search** for arithmetic subprograms. Unlike older local rewriting, it can replace a window that must generate **up to three distinct target values** and preserve up to three changed, suffix-live register outputs. It synthesizes intermediate arithmetic values, preserves register states required later, and uses exact integer replay. Each proposed rewrite must **strictly reduce instruction count** and pass the unchanged independent validator.
+2. `swarm/portfolio_v22.py`: a population of different search *configurations* (beam widths, depths, window widths, helper exploration, legacy search). It selects strategies using an exploration/exploitation score, records actual instructions saved, and mutates strategy parameters every other generation. This is evolution of search policies, not a trained LLM or proof of globally optimal arithmetic programs.
+3. `state/evolution_memory.json` persisted in the `champion` artifact across cloud restarts. The archive remembers **which strategy actually worked** and evolves future variants. Do not delete the artifact if you want to retain that memory.
+4. New workflow step **Evolve mathematical search strategies and optimize shared targets**. The optimization requires **zero AI calls**, so it keeps running even when OpenRouter free models are unavailable. Existing AI and research stages are retained unchanged from v2.1.5.
+5. `logs/portfolio.json` and `EVOLUTIONARY PORTFOLIO:` diagnostics report tested windows, expanded search states, accepted candidates, valid improvement counts, previous score and new score. `OVERALL EVOLUTION:` remains the authoritative entire-run score.
 
-1. Download and **Extract All** of this ZIP.
-2. Open the extracted `tests` folder and copy **both** `.py` files.
-3. Open your existing Santa Swarm GitHub repository folder, then open its `tests` folder.
-4. Paste and choose **Replace the files in the destination**.
-5. In GitHub Desktop, commit the two changed tests and **Push origin**.
-6. In GitHub Actions, run a **new** `Santa Swarm — evolve and validate` workflow run.
+### Honest testing status
 
-Do **not** delete any other files. Do **not** change `swarm/agent_v2.py`. Do **not** change either API key. These tests use simulated responses and cannot spend your API quota.
+**55 local unit tests passed.** New test puzzle with seeds `[2,3,5]` and targets `[10,12,15]` was reduced from **4 instructions to 3** by genuinely different arithmetic. A second run proved it does not regress the champion. Tests also check suffix preservation, valid divisions, tight register limits, and saved strategy memory.
 
-## Expected verification
+The optimizer **has not yet been benchmarked on the full 1,000 competition puzzles with your current champion**. It is entirely possible it will save zero instructions on such an advanced baseline. Its success or failure must be measured from the next workflow's `EVOLUTIONARY PORTFOLIO` and `OVERALL EVOLUTION` lines, not from the miniature test scores.
 
-`Ran 42 tests` followed by `OK` means all 42 local tests passed. The small `PUBLIC BOOTSTRAP: previous_score 6, new_score 5` is from a miniature offline test; **it is not your real Kaggle score**.
+## Beginner-friendly upgrade
 
-The next important status is `AI AGENTS:` later in the workflow. It must show whether a free model actually returned usable ideas and code. Only `OVERALL EVOLUTION:` (and Kaggle confirmation) can establish an actual competition score change.
+1. Back up your latest `champion.csv` as explained above.
+2. Download `Santa_Swarm_v2_2_MultiTarget_Evolution.zip`, right-click and select **Extract All**.
+3. Open the extracted `santa_swarm_v2_2` folder. Select **everything inside it**, including the `.github` directory. In Windows File Explorer choose **View → Show → Hidden items** if necessary.
+4. Copy those files into your **existing local GitHub repository folder** (your working Santa Swarm folder). Choose **Replace files in destination** if asked. Do not delete the repository folder; do not delete its hidden `.git` directory; **do not create a nested folder**.
+5. Open GitHub Desktop; in **Changes**, inspect that the two new files (`beam_resynthesis.py`, `portfolio_v22.py`) and workflow are present. Commit with message `Add multi-target evolutionary optimizer v2.2`; click **Push origin**.
+6. On GitHub go to **Actions → Santa Swarm — evolve and validate → Run workflow** and run the `main` branch. Do not rerun a job from an older commit.
+7. In the successful run open the step **Evolve mathematical search strategies and optimize shared targets**. Look for `EVOLUTIONARY PORTFOLIO:`. Also expand **Independently verify every improvement and preserve champion** and look for `OVERALL EVOLUTION:`.
+8. Send those **two log lines**, not your API keys. If either step fails, provide the last 15–20 lines of its error log.
 
-## Test status
+## Existing OpenRouter integration
 
-Verified locally with the original v2.1.4 `agent_v2.py` and all 42 original/current tests after replacing these two outdated tests: **42 tests pass, 0 failures, 0 errors**. No live OpenRouter calls or full Kaggle benchmark were performed.
+The package includes v2.1.5 `swarm/agent_v2.py` unchanged. It continues to attempt zero-priced models only. The AI stage may still fail because of free-tier capacity; **this does not block the deterministic mathematical search**. As before, generated AI code executes in a network-disabled, credential-free container. No API key is stored in this ZIP.
+
+## Limits and future priorities
+
+- **Search quality:** useful for bounded multi-output repairs, not yet global arithmetic DAG resynthesis or exact CP-SAT search.
+- **Optimization time:** this workflow adds up to 190 seconds per scheduled run for 70 puzzles with at most ~1.2 seconds per strategy attempt. No guaranteed savings.
+- **Persistence:** artifacts now retained 30 days rather than 7. GitHub Actions artifacts are not an eternal database: download occasional backups, and keep track of free service limits and applicable terms.
+- **Cost:** no paid models, no paid compute requested. Public-repository Actions usage remains subject to GitHub acceptable-use rules and runner limits.
+- **Score:** the old public baseline is used only if no valid retained champion exists; no public-submission import is performed when a champion is restored.
+
+### Research used for design (inspiration, not copied competition submissions)
+
+- [Kaggle Santa 2026 Competition](https://www.kaggle.com/competitions/santa-2026)
+- [eSLIM: Circuit Minimization with SAT-Based Local Improvement](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.SAT.2024.23)
+- [Towards a library for straight-line programs](https://www.texmacs.org/joris/slp/slp.html)
+- [Santa 2026 Backward Frontier Rewrite](https://www.kaggle.com/code/avazaku/elf-calc-shared-helpers-chain-resynthesis)
+- [Juan-Severiano Santa 2026 experimental approaches](https://github.com/Juan-Severiano/santa-2026)
+
+### Development check
+
+`python -m unittest discover -s tests -v`
+
+Local benchmark: `PYTHONPATH=swarm python -m unittest tests/test_multi_target_portfolio_v22.py -v` (or run full discovery).

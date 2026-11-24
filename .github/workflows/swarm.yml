@@ -107,6 +107,13 @@ jobs:
             --seconds-per-puzzle 4 --width 10 --windows 500
           cp state/resynthesized.csv state/base.csv
 
+      - name: Evolve mathematical search strategies and optimize shared targets (no API calls)
+        run: |
+          python swarm/portfolio_v22.py data/puzzles.csv state/base.csv state/portfolio.csv logs/portfolio.json \
+            --memory state/evolution_memory.json --generation "${{ github.run_number }}" \
+            --max-seconds 190 --max-puzzles 70 --seconds-per-trial 1.2
+          cp state/portfolio.csv state/base.csv
+
       - name: Research full public abstracts/READMEs and run three AI agent roles
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -133,7 +140,7 @@ jobs:
         run: |
           python swarm/verify.py data/puzzles.csv state/base.csv scratch/attempt.csv state/champion.csv state/report.json \
             --original state/start_of_run.csv --bootstrap-report logs/bootstrap.json --deterministic-report logs/deterministic.json \
-            --resynthesis-report logs/resynthesis.json
+            --resynthesis-report logs/resynthesis.json --portfolio-report logs/portfolio.json
           cat state/report.json
 
       - name: Record scored outcomes as future agent memory
@@ -150,9 +157,10 @@ jobs:
             state/champion.csv
             state/report.json
             state/agent_history.json
+            state/evolution_memory.json
             state/last_candidate.py
             state/last_successful_candidate.py
-          retention-days: 7
+          retention-days: 30
           if-no-files-found: error
 
       - name: Save research and diagnostics
