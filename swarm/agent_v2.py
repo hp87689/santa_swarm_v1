@@ -14,13 +14,14 @@ from pathlib import Path
 from agent import extract_code
 from research_v2 import gather
 
-# Use explicit $0 models, not the random openrouter/free router which can
-# select a reasoning-heavy model that consumes the entire response budget.
+# Discover free, text-chat models from OpenRouter's live catalog on each new run.
+# Do not pin removed model IDs or use paid fallbacks.
 MODEL_OVERRIDE = os.environ.get('OPENROUTER_MODEL', '').strip()
-MATHEMATICIAN_MODEL = MODEL_OVERRIDE or 'google/gemma-4-31b-it:free'
-PROGRAMMER_MODEL = MODEL_OVERRIDE or 'cohere/north-mini-code:free'
-CRITIC_MODEL = MODEL_OVERRIDE or 'google/gemma-4-31b-it:free'
-FALLBACK_MODEL = os.environ.get('OPENROUTER_FALLBACK_MODEL', 'google/gemma-4-31b-it:free').strip()
+FALLBACK_MODEL = os.environ.get('OPENROUTER_FALLBACK_MODEL', '').strip()
+MATHEMATICIAN_MODEL = MODEL_OVERRIDE or 'auto:live-free-model-catalog'
+PROGRAMMER_MODEL = MODEL_OVERRIDE or 'auto:live-free-model-catalog'
+CRITIC_MODEL = MODEL_OVERRIDE or 'auto:live-free-model-catalog'
+_CATALOG = None
 API_CALLS = []
 
 
@@ -87,6 +88,16 @@ def parse_chat_response(result, role):
     if result.get('error'):
         err = result['error']
         code = err.get('code', 'unknown') if isinstance(err, dict) else 'unknown'
+        meta = err.get('metadata', {}) if isinstance(err, dict) else {}
+        meta = meta if isinstance(meta, dict) else {}
+        source = str(meta.get('limit_source') or 'unknown')[:80]
+        API_CALLS.append({'role': role, 'embedded_error_code': code, 'limit_source': source})
+        if str(code) == '429':
+            upstream = source == 'upstream_provider_shared_pool'
+            raise OpenRouterResponseError(f'http_429:{source} for role={role}',
+                                          allow_fallback=upstream)
+        if str(code) in ('400', '401', '402', '403', '404', '502', '503', '504'):
+            raise OpenRouterResponseError(f'http_{code} for role={role}')
         raise OpenRouterResponseError(f'api_error_code={code}')
     choices = result.get('choices')
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -121,12 +132,98 @@ def _is_free_model(model):
     return bool(model) and (model.endswith(':free') or model == 'openrouter/free')
 
 
-def _role_model(role):
-    if role == 'Mathematician agent':
-        return MATHEMATICIAN_MODEL
+def _zero_price(value):
+    try:
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def filter_free_text_models(payload):
+    """Allow only API-confirmed free chat completions with textual I/O.
+
+    In particular, never treat an embedding, image, classifier, or reranker
+    with ':free' in its slug as a usable text model.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get('data'), list):
+        raise OpenRouterResponseError('model_catalog_invalid')
+    found = []
+    for model in payload['data']:
+        if not isinstance(model, dict):
+            continue
+        mid = model.get('id')
+        pricing = model.get('pricing')
+        arch = model.get('architecture')
+        endpoints = model.get('endpoints')
+        if not (isinstance(mid, str) and mid.endswith(':free')
+                and isinstance(pricing, dict) and isinstance(arch, dict)
+                and isinstance(endpoints, list)):
+            continue
+        if not all(_zero_price(pricing.get(k)) for k in ('prompt', 'completion', 'request')):
+            continue
+        if '/api/v1/chat/completions' not in endpoints:
+            continue
+        if 'text' not in (arch.get('input_modalities') or []):
+            continue
+        if 'text' not in (arch.get('output_modalities') or []):
+            continue
+        top = model.get('top_provider') or {}
+        cap = top.get('max_completion_tokens') if isinstance(top, dict) else None
+        if isinstance(cap, int) and cap < 1200:
+            continue
+        found.append(mid)
+    return sorted(set(found))
+
+
+def discover_free_text_models(key):
+    global _CATALOG
+    if _CATALOG is not None:
+        return list(_CATALOG)
+    req = urllib.request.Request(
+        'https://openrouter.ai/api/v1/models?output_modalities=text',
+        headers={'Authorization': 'Bearer ' + key, 'Accept': 'application/json',
+                 'X-Title': 'SantaSwarm2026-LiveFreeModels'}, method='GET')
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.load(resp)
+    except urllib.error.HTTPError as err:
+        raise OpenRouterResponseError('model_catalog_http_' + str(err.code)) from None
+    except (urllib.error.URLError, TimeoutError, ValueError, TypeError):
+        raise OpenRouterResponseError('model_catalog_unavailable') from None
+    models = filter_free_text_models(payload)
+    if not models:
+        raise OpenRouterResponseError('no_free_chat_models_in_catalog')
+    _CATALOG = tuple(models)
+    API_CALLS.append({'model_catalog_eligible_free_chat_models': len(models)})
+    return list(_CATALOG)
+
+
+def _model_priority(model, role):
+    """Deterministic ranking, not a promise of model quality or availability."""
+    name = model.lower()
+    score = 0
     if role == 'Python optimization engineer':
-        return PROGRAMMER_MODEL
-    return CRITIC_MODEL
+        score += 7 if any(w in name for w in ('code', 'coder', 'program')) else 0
+    else:
+        score += 5 if any(w in name for w in ('gemma', 'qwen', 'ernie', 'inkling')) else 0
+    # Reasoning-only models previously exhausted the output budget.
+    if any(w in name for w in ('reasoning', 'nemotron', 'think')):
+        score -= 8
+    if any(w in name for w in ('embed', 'rerank', 'speech', 'audio', 'image')):
+        score -= 20
+    return (-score, name)
+
+
+def _candidate_models(key, role):
+    candidates = discover_free_text_models(key)
+    candidates.sort(key=lambda m: _model_priority(m, role))
+    # Overrides only work if the live API confirms the model is free and usable.
+    for preferred in (MODEL_OVERRIDE, FALLBACK_MODEL):
+        if preferred and preferred not in candidates:
+            API_CALLS.append({'role': role, 'configuration_warning': 'override_not_in_live_free_catalog',
+                              'model': preferred[:110]})
+    head = [m for m in (MODEL_OVERRIDE, FALLBACK_MODEL) if m in candidates]
+    return list(dict.fromkeys(head + candidates))
 
 
 def _one_completion(key, role, prompt, tokens, model):
@@ -164,30 +261,31 @@ def _one_completion(key, role, prompt, tokens, model):
 
 
 def completion(key, role, prompt, tokens=1800):
-    primary = _role_model(role)
-    if not _is_free_model(primary):
-        raise OpenRouterResponseError('blocked_nonfree_model')
-    models = [primary]
-    # A single fallback only. Additional retries could exhaust the free quota.
-    if FALLBACK_MODEL != primary and _is_free_model(FALLBACK_MODEL):
-        models.append(FALLBACK_MODEL)
-    elif primary != 'cohere/north-mini-code:free' and not MODEL_OVERRIDE:
-        models.append('cohere/north-mini-code:free')
-    for attempt, model in enumerate(models):
+    # A maximum of two inference attempts per role conserves a $0 quota.
+    models = _candidate_models(key, role)
+    if not models:
+        raise OpenRouterResponseError('no_free_chat_model_available')
+    last_error = None
+    for attempt, model in enumerate(models[:2]):
         try:
             return _one_completion(key, role, prompt, tokens, model)
         except OpenRouterResponseError as err:
+            last_error = err
             detail = str(err)
-            # Fail fast on account limits, auth errors and unknown 429s.
-            # Only confirmed provider-capacity 429s and unusable content may
-            # use the one free-model fallback. No automatic repeated retries.
-            if detail.startswith(('http_401', 'http_402', 'http_403')):
+            if detail.startswith(('http_401', 'http_402', 'http_403', 'http_400')):
                 raise
+            # Unknown / account-level 429 = stop. Upstream 429 = switch model.
             if detail.startswith('http_429') and not err.allow_fallback:
                 raise
-            if attempt == len(models) - 1:
-                raise OpenRouterResponseError('all_free_models_failed: ' + detail) from None
-    raise OpenRouterResponseError('no_free_model_available')
+            # Model 404, provider 5xx, empty content: switch to a different
+            # catalog-confirmed free model, never to a paid endpoint.
+            if not (err.allow_fallback or detail.startswith(('http_404', 'http_502',
+                    'http_503', 'http_504', 'empty_content:', 'missing_choices',
+                    'unexpected_response_type', 'api_error_code='))):
+                raise
+            if attempt == 1:
+                break
+    raise OpenRouterResponseError('all_live_free_models_failed: ' + str(last_error)) from None
 
 
 def strip_json_fence(raw):
