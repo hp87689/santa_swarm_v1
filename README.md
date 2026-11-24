@@ -1,32 +1,30 @@
-# Santa Swarm v2.1.4 — Live free-model selection
+# Santa Swarm v2.1.4 — Fix for old tests
 
-**Purpose:** Repair the failed AI stage from generation 12 (`429` upstream Gemma; `404` Cohere fallback) without altering the arithmetic solver or losing the 128,504 champion.
+This patch corrects outdated test mocks after the OpenRouter live free-model discovery upgrade. It changes **only two test files**. It does not change the actual swarm optimizer, its OpenRouter configuration, the Kaggle data, or the champion submission.
 
-## Changes
-- Reads OpenRouter's current `GET /api/v1/models` catalog once per GitHub run.
-- Filters models to `:free` entries with **zero prompt, completion, and request prices**, a text input/output modality, and a `/api/v1/chat/completions` endpoint.
-- Ranks those models for mathematical reasoning/coding; avoids reasoning-heavy names when possible. This is heuristic only; a listing does not guarantee immediate provider capacity.
-- Chooses two distinct free models (at most two inference attempts per role). Upstream-provider 429, model 404, provider 502/503/504, or empty content can trigger a fallback. Account-level daily/minute 429, authentication, and payment errors stop immediately.
-- A `200 OK` response containing an API error is also handled.
-- Logs the eligible model count and attempted model IDs but not your API key or raw server body.
-- Model overrides (`OPENROUTER_MODEL`, `OPENROUTER_FALLBACK_MODEL`) are honored only if the live catalog confirms they're eligible free models. You don't need to configure them.
+## Why the workflow stopped
+
+The older rate-limit tests assumed the first OpenRouter request would be a POST to `/chat/completions`. Version 2.1.4 makes an initial GET request to `/models` to find zero-priced models. Old test mocks fed a simulated 429 chat-completion error into that initial catalog request, so the tests failed with `model_catalog_http_429` before testing the intended retry logic.
+
+The remaining older test expected the error text `api_error_code=429`, but the current code correctly classifies an embedded account-error response as `http_429:unknown` (non-retryable).
 
 ## Install on Windows
-1. Save a backup of the latest `champion.csv` if you haven't already.
-2. Extract this ZIP.
-3. Copy **only** `swarm/agent_v2.py` into your existing Santa-Swarm-2026 GitHub project folder's `swarm` directory, selecting **Replace**.
-4. Do not delete any other files or the hidden `.git` directory.
-5. GitHub Desktop: **Commit to main** (e.g. `Use live OpenRouter free-model catalog`) and **Push origin**.
-6. GitHub: **Actions** > **Santa Swarm — evolve and validate** > **Run workflow**.
-7. Expand the `python swarm/agent_v2.py` step and copy the line starting `AI AGENTS:`. Check whether `stages` now contains `mathematician`, `programmer`, and `critic`.
 
-## What this does not promise
-- No paid model will be called by this module, but availability and success cannot be guaranteed for free endpoints.
-- It is an API reliability fix, **not** a more powerful arithmetic optimizer. `candidate_saved` means the AI generated code, not that Kaggle score improved. Verify `OVERALL EVOLUTION` separately.
-- A `404` may indicate model removal **or** data-policy/provider restrictions; if all attempts return 404, review your OpenRouter model/provider access and privacy settings rather than rotating keys.
-- This module has no access to your OpenRouter token during offline testing; live integration must be verified in your GitHub workflow.
+1. Download and **Extract All** of this ZIP.
+2. Open the extracted `tests` folder and copy **both** `.py` files.
+3. Open your existing Santa Swarm GitHub repository folder, then open its `tests` folder.
+4. Paste and choose **Replace the files in the destination**.
+5. In GitHub Desktop, commit the two changed tests and **Push origin**.
+6. In GitHub Actions, run a **new** `Santa Swarm — evolve and validate` workflow run.
 
-## Tests
-The complete local v2.1 solver test suite plus routing tests passed: 29 total.
+Do **not** delete any other files. Do **not** change `swarm/agent_v2.py`. Do **not** change either API key. These tests use simulated responses and cannot spend your API quota.
 
-For the complete test suite, integrate `tests/test_live_model_routing.py` into the project and run `python -m unittest discover -s tests -p 'test_*.py'`. The tests are optional for a one-file install.
+## Expected verification
+
+`Ran 42 tests` followed by `OK` means all 42 local tests passed. The small `PUBLIC BOOTSTRAP: previous_score 6, new_score 5` is from a miniature offline test; **it is not your real Kaggle score**.
+
+The next important status is `AI AGENTS:` later in the workflow. It must show whether a free model actually returned usable ideas and code. Only `OVERALL EVOLUTION:` (and Kaggle confirmation) can establish an actual competition score change.
+
+## Test status
+
+Verified locally with the original v2.1.4 `agent_v2.py` and all 42 original/current tests after replacing these two outdated tests: **42 tests pass, 0 failures, 0 errors**. No live OpenRouter calls or full Kaggle benchmark were performed.

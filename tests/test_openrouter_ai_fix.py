@@ -41,7 +41,7 @@ class Tests(unittest.TestCase):
             object_from_response(None)
 
     def test_api_error(self):
-        with self.assertRaisesRegex(OpenRouterResponseError, 'api_error_code=429'):
+        with self.assertRaisesRegex(OpenRouterResponseError, 'http_429:unknown'):
             parse_chat_response({'error': {'code':429,'message':'rate limited'}}, 'coder')
 
 if __name__=='__main__':unittest.main()
