@@ -1,28 +1,38 @@
-# Santa Swarm 2026 — OpenRouter AI stage hotfix
+# Santa Swarm v2.1.2 — OpenRouter reasoning-token fix
 
-This patch fixes the crash in `swarm/agent_v2.py` reported as:
-`AI AGENTS: {"status":"no_candidate","stages":[],"error":"'NoneType' object is not subscriptable"}`
+This is a **one-file AI patch**, not a full new swarm. Keep all your existing v2.1 project files and the 128,504 champion.
 
-## Install without typing code
+## What the generation 9 error proves
+
+The free router selected `nvidia/nemotron-3.5-lightning:free` and consumed all 2,200 generated tokens in reasoning (`finish_reason=length`), leaving no final answer. The OpenRouter API key *was used*, but no mathematician proposal could be parsed and the programmer/critic stages did not run.
+
+## Changes in this patch
+
+- Chooses explicit zero-cost models instead of the unpredictable `openrouter/free` router: `google/gemma-4-31b-it:free` for mathematics and critique, `cohere/north-mini-code:free` for code.
+- Requests `reasoning: {"enabled": false}`. Providers can still ignore the request; the patch logs what actually happened.
+- Tries **at most one other free model per role** on empty/malformed responses or recoverable errors. Does **not retry** a 401/402/403/429 error, to avoid wasting the free quota.
+- Rejects model names that aren't explicitly free, even if an environment override is supplied.
+- Allows models to return JSON surrounded by a ` ```json ` code fence.
+- Saves diagnostics in `logs/proposal.json` and `AI AGENTS:` with actual routed models, finish reasons, and token usage. No key is logged.
+
+## Install (Windows / GitHub Desktop)
 
 1. Extract this ZIP.
-2. Open its `swarm` folder and copy **agent_v2.py**.
-3. In Windows File Explorer, open your existing `Santa-Swarm-2026` GitHub project folder, then open its `swarm` folder.
-4. Paste the new `agent_v2.py` there and choose **Replace the file in the destination**.
-5. Open GitHub Desktop, enter a commit message such as `Fix OpenRouter empty AI responses`, click **Commit to main**, then **Push origin**.
-6. On GitHub, go to **Actions → Santa Swarm — evolve and validate → Run workflow**. Choose `main`.
-7. Expand the AI step. Look for `AI AGENTS:` and its `api_calls` details.
+2. Open the `swarm` folder inside it and copy `agent_v2.py`.
+3. Open your existing local GitHub repository folder (`Santa-Swarm-2026`) and enter its `swarm` subfolder.
+4. Paste **only `agent_v2.py`**, choose **Replace the file**. Don't delete anything else.
+5. In GitHub Desktop, **Commit to main** with message `Fix free OpenRouter reasoning exhaustion`, then **Push origin**.
+6. GitHub website → **Actions** → **Santa Swarm — evolve and validate** → **Run workflow** on `main`.
+7. Open the `Research full public abstracts/READMEs and run three AI agent roles` step. Copy the new `AI AGENTS:` line into ChatGPT.
 
-## What this patch changes
+### What we hope to see
 
-- Handles OpenRouter HTTP errors, absent choices, null content and zero-length content without the misleading Python `NoneType` crash.
-- Asks for low reasoning effort so more output tokens can be used for the final JSON/code response. It cannot force every free model to comply.
-- Prints which model responded and whether output was empty, including finish reason and token counts where provided.
-- Keeps the existing champion even when the model cannot produce an optimizer.
-- Makes NO additional paid API calls and does not require new secrets. The default model remains `openrouter/free`.
+`"status":"candidate_saved"` and `"stages":["mathematician","programmer","critic"]` indicates that all agent roles ran and generated code. It does **not** mean the code improved the champion; that still requires the independent validator's `OVERALL EVOLUTION` and `VALIDATED CHAMPION` logs.
 
-## Important
+If the primary model fails and fallback works, `api_calls` will contain both attempts. If all fail, the detailed error remains visible. The existing deterministic search and champion will still run.
 
-This is a targeted AI reliability patch, not a guarantee that an AI-generated optimizer improves 128,504. A successful AI stage should show `candidate_saved` and stages `mathematician`, `programmer`, `critic`. Independently validated score reductions are still required to claim progress.
+## Testing / limitations
 
-This ZIP contains only the changed Python file, the installation guide, and optional offline tests. You don't need to replace the full project.
+- Six new unit tests for fallback, refusal of paid models, reasoning setting, and quota-aware error handling passed locally, plus the existing 19 project tests.
+- The patch was **not tested against your private OpenRouter account**, and no real Kaggle score reduction can be claimed until the next run.
+- Explicit model availability, provider behavior, and free quotas may change. This is a reliability fix, not yet a genuine multi-island evolutionary algorithm.
