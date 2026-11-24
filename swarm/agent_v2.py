@@ -25,7 +25,48 @@ API_CALLS = []
 
 
 class OpenRouterResponseError(ValueError):
-    """Detailed but safe error for missing model output."""
+    """Detailed but safe error for missing model output.
+
+    allow_fallback=True is reserved for a confirmed upstream provider capacity
+    problem or an unusable model response. Account quota failures do not retry.
+    """
+    def __init__(self, message, *, allow_fallback=False):
+        super().__init__(message)
+        self.allow_fallback = allow_fallback
+
+
+def classify_http_error(err):
+    """Interpret OpenRouter's documented error.metadata.limit_source.
+
+    We never log raw server responses, which may contain submitted prompts.
+    Unknown HTTP 429s are treated conservatively as non-retryable.
+    """
+    source = 'unknown'
+    provider_limited = False
+    try:
+        body = err.read(8192)
+        obj = json.loads(body)
+        info = obj.get('error', {}) if isinstance(obj, dict) else {}
+        meta = info.get('metadata', {}) if isinstance(info, dict) else {}
+        if isinstance(meta, dict) and isinstance(meta.get('limit_source'), str):
+            candidate = meta['limit_source']
+            allowed = {'openrouter_free_tier_daily', 'openrouter_free_tier_per_minute',
+                       'upstream_provider_shared_pool', 'openrouter_key_limit',
+                       'openrouter_credits'}
+            source = candidate if candidate in allowed else 'other'
+        message = str(info.get('message') or '').lower() if isinstance(info, dict) else ''
+        provider_limited = (source == 'upstream_provider_shared_pool') or (
+            source == 'unknown' and ('temporarily rate-limited upstream' in message
+                                     or 'rate-limited upstream' in message))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        pass
+    if provider_limited:
+        return 'upstream_provider_shared_pool', True
+    if source == 'openrouter_free_tier_daily':
+        return 'free_daily_limit', False
+    if source == 'openrouter_free_tier_per_minute':
+        return 'free_minute_limit', False
+    return source, False
 TOPICS = [
     'Rebuild a short target-producing window using available arithmetic values.',
     'Detect equivalent live registers and forward their uses to eliminate redundant arithmetic.',
@@ -108,7 +149,13 @@ def _one_completion(key, role, prompt, tokens, model):
             result = json.load(resp)
     except urllib.error.HTTPError as err:
         # Never expose the key, prompt, provider response body, or request headers.
-        API_CALLS.append({'role': role, 'http_status': err.code, 'model': model})
+        source, allow_fallback = classify_http_error(err)
+        API_CALLS.append({'role': role, 'http_status': err.code, 'model': model,
+                          'limit_source': source})
+        if err.code == 429:
+            raise OpenRouterResponseError(
+                f'http_429:{source} for role={role}',
+                allow_fallback=allow_fallback) from None
         raise OpenRouterResponseError(f'http_{err.code} for role={role}') from None
     except urllib.error.URLError as err:
         API_CALLS.append({'role': role, 'network_error': type(err).__name__, 'model': model})
@@ -131,8 +178,12 @@ def completion(key, role, prompt, tokens=1800):
             return _one_completion(key, role, prompt, tokens, model)
         except OpenRouterResponseError as err:
             detail = str(err)
-            # Do not burn free requests retrying authorization or rate-limit errors.
-            if 'http_401' in detail or 'http_402' in detail or 'http_403' in detail or 'http_429' in detail:
+            # Fail fast on account limits, auth errors and unknown 429s.
+            # Only confirmed provider-capacity 429s and unusable content may
+            # use the one free-model fallback. No automatic repeated retries.
+            if detail.startswith(('http_401', 'http_402', 'http_403')):
+                raise
+            if detail.startswith('http_429') and not err.allow_fallback:
                 raise
             if attempt == len(models) - 1:
                 raise OpenRouterResponseError('all_free_models_failed: ' + detail) from None
